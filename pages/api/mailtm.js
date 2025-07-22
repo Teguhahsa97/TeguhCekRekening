@@ -1,67 +1,131 @@
 // pages/api/mailtm.js
 
+// Fungsi bantu untuk timeout pada fetch (penting untuk API eksternal)
+const fetchWithTimeout = async (url, options, timeout = 15000) => { // Timeout 15 detik
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeout);
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+    clearTimeout(id);
+    return response;
+  } catch (error) {
+    clearTimeout(id);
+    if (error.name === 'AbortError') {
+      throw new Error('Permintaan ke API eksternal melebihi batas waktu (timeout).');
+    }
+    throw error;
+  }
+};
+
+
+const MAILTM_API_BASE_URL = 'https://api.mail.tm';
+
 export default async function handler(req, res) {
   if (req.method === 'POST') {
     const { action, email, password, token, messageId } = req.body;
 
-    // Simulasikan delay API (penting untuk UX)
-    await new Promise(resolve => setTimeout(resolve, 1000)); // Delay 1 detik
-
     try {
+      let apiResponse;
+      let data;
+      let url;
+      let options;
+
       switch (action) {
         case 'get_domains':
-          // Simulasi daftar domain
-          const simulatedDomains = [
-            { id: 'dom1', domain: 'example.com', isActive: true },
-            { id: 'dom2', domain: 'mymail.net', isActive: true }, // Tambah domain
-            { id: 'dom3', domain: 'temp-inbox.org', isActive: true }, // Tambah domain
-          ];
-          console.log('[API Simulation] Serving simulated domains.');
-          return res.status(200).json({ 'hydra:member': simulatedDomains });
+          url = `${MAILTM_API_BASE_URL}/domains`;
+          options = {};
+          break;
 
         case 'create_account':
-          // Simulasi pembuatan akun (selalu sukses dalam simulasi)
-          const simulatedId = `acc_${Math.random().toString(36).substring(2, 10)}`;
-          console.log(`[API Simulation] Created simulated account: ${email}`);
-          return res.status(200).json({ id: simulatedId, address: email, password: password });
+          url = `${MAILTM_API_BASE_URL}/accounts`;
+          options = {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ address: email, password: password }),
+          };
+          break;
 
         case 'get_token':
-          // Simulasi pemberian token (selalu sukses)
-          const simulatedToken = `sim_jwt_${Math.random().toString(36).substring(2, 20)}`;
-          console.log(`[API Simulation] Generated simulated token for: ${email}`);
-          return res.status(200).json({ token: simulatedToken });
+          url = `${MAILTM_API_BASE_URL}/token`;
+          options = {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ address: email, password: password }),
+          };
+          break;
 
         case 'get_messages':
-          // Simulasikan email di inbox.
-          // Untuk demo, selalu kembalikan dua pesan ini.
-          const simulatedMessages = [
-            { id: 'msg1', subject: 'Welcome! Your Simulated Email', from: { address: 'support@simulated.com' }, intro: 'Thank you for using our service!', createdAt: new Date().toISOString(), text: 'This is a simulated welcome message.', html: ['<p>This is a <b>simulated</b> welcome message.</p>'] },
-            { id: 'msg2', subject: 'Your Order #12345 (Simulated)', from: { address: 'shop@simulated.com' }, intro: 'Your order has been placed!', createdAt: new Date(Date.now() - 60000).toISOString(), text: 'Order details: Item A, Item B.', html: ['<p>Order details: <b>Item A</b>, <i>Item B</i>.</p>'] },
-          ];
-          console.log('[API Simulation] Serving simulated messages.');
-          return res.status(200).json({ 'hydra:member': simulatedMessages });
-
-        case 'read_message':
-          // Simulasikan membaca detail pesan
-          const msgToRead = {
-            id: messageId,
-            subject: 'Simulated Message Detail for ' + messageId,
-            from: { address: 'system@simulated.com' },
-            intro: 'This is a detailed view of a simulated message.',
-            text: 'This is the full text body of the simulated message. Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.',
-            html: ['<p>This is the <b>full HTML body</b> of the simulated message. Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.</p>'],
-            createdAt: new Date().toISOString(),
+          if (!token) {
+            return res.status(401).json({ error: 'Authorization token is missing.' });
+          }
+          url = `${MAILTM_API_BASE_URL}/messages`;
+          options = {
+            headers: { 'Authorization': `Bearer ${token}` },
           };
-          console.log(`[API Simulation] Reading simulated message: ${messageId}`);
-          return res.status(200).json(msgToRead);
+          break;
+        
+        case 'read_message':
+          if (!token || !messageId) {
+            return res.status(400).json({ error: 'Authorization token and message ID are required.' });
+          }
+          url = `${MAILTM_API_BASE_URL}/messages/${messageId}`;
+          options = {
+            headers: { 'Authorization': `Bearer ${token}` },
+          };
+          break;
 
         default:
-          console.log(`[API Simulation] Invalid action: ${action}`);
-          return res.status(400).json({ status: 'error', message: 'Invalid API action for TempMail simulation.' });
+          return res.status(400).json({ error: 'Invalid API action.' });
       }
+
+      // Gunakan fetchWithTimeout untuk semua panggilan ke Mail.tm
+      apiResponse = await fetchWithTimeout(url, options); 
+      const rawResponseText = await apiResponse.text(); // Ambil raw text dulu
+
+      // Log respons mentah untuk debugging
+      console.log(`[Mail.tm API Proxy Debug] Raw Response for action '${action}':`, rawResponseText);
+
+      try {
+          data = JSON.parse(rawResponseText);
+      } catch (e) {
+          // Jika respons bukan JSON, kemungkinan ada blocking atau error HTML dari Mail.tm
+          console.error(`[Mail.tm API Proxy Error] Failed to parse JSON for action '${action}'. Raw response:`, rawResponseText);
+          return res.status(500).json({ 
+              status: 'error', 
+              message: `Respon dari Mail.tm bukan JSON. Kemungkinan diblokir atau ada error HTML.`, 
+              rawResponse: rawResponseText 
+          });
+      }
+      
+      // Log respons yang sudah diparse
+      console.log(`[Mail.tm API Proxy Debug] Parsed Response for action '${action}':`, data);
+
+      // Periksa status HTTP dan kode error dari Mail.tm
+      if (!apiResponse.ok || (data && data.code)) {
+        console.error(`[Mail.tm API Error - Action: ${action}] Status: ${apiResponse.status}, Mail.tm Code: ${data?.code}, Detail: ${data?.detail}`);
+        // Kirim error yang lebih informatif ke frontend
+        return res.status(apiResponse.status).json({
+          status: 'error',
+          message: data?.detail || data?.message || `Mail.tm API error: ${apiResponse.status} (Code: ${data?.code || 'N/A'})`,
+          rawResponse: data
+        });
+      }
+
+      res.status(apiResponse.status).json(data);
+
     } catch (error) {
-      console.error('[API Simulation Fatal Error] Error in API Route:', error);
-      res.status(500).json({ status: 'error', message: 'Internal server error in TempMail simulation.', detail: error.message });
+      console.error(`[API Proxy Fatal Error - Action: ${action}] Kesalahan saat menghubungi Mail.tm:`, error);
+      let errorMessage = 'Kesalahan server internal saat menghubungi Mail.tm.';
+      if (error.message.includes('timeout')) {
+          errorMessage = 'Permintaan ke Mail.tm melebihi batas waktu. Server mungkin sibuk.';
+      } else if (error.message.includes('Failed to fetch')) {
+          errorMessage = 'Kesalahan jaringan atau Mail.tm tidak dapat dijangkau.';
+      }
+      res.status(500).json({ status: 'error', message: errorMessage, detail: error.message });
     }
   } else {
     res.setHeader('Allow', ['POST']);
