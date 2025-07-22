@@ -10,7 +10,7 @@ const LS_TOKEN_KEY = 'mailtm_temp_token';
 const LS_ACCOUNT_ID_KEY = 'mailtm_temp_account_id';
 const LS_PASSWORD_KEY = 'mailtm_temp_password';
 
-// Definisi Keyframes untuk animasi
+// Definisi Keyframes (tetap di sini, atau idealnya di globals.css)
 const keyframes = `
   @keyframes pulse {
     0% { opacity: 0.3; transform: scale(1); }
@@ -24,36 +24,40 @@ const keyframes = `
 `;
 
 export default function TempMailPage() {
-  const [tempEmail, setTempEmail] = useState('');
+  const [tempEmail, setTempEmail] = useState(null); // <-- Inisialisasi dengan null untuk SSR
   const [inbox, setInbox] = useState([]);
-  const [isLoadingEmail, setIsLoadingEmail] = useState(true);
+  const [accountToken, setAccountToken] = useState(null);
+  const [accountId, setAccountId] = useState(null);
+  const emailPasswordRef = useRef(null); // <-- Inisialisasi dengan null, akan di-generate di klien
+
+  const [isLoadingEmail, setIsLoadingEmail] = useState(true); 
   const [isRefreshingInbox, setIsRefreshingInbox] = useState(false);
   const [isCopying, setIsCopying] = useState(false);
   const [message, setMessage] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [selectedEmailDetail, setSelectedEmailDetail] = useState(null);
+  const [isClient, setIsClient] = useState(false); // State untuk menandakan sudah di sisi klien
 
-  const [domains, setDomains] = useState([]);
-  const [accountToken, setAccountToken] = useState(null);
-  const [accountId, setAccountId] = useState(null);
-  
-  const emailPasswordRef = useRef(Math.random().toString(36).substring(2, 15));
   const { theme, toggleTheme, themeMode } = useContext(ThemeContext);
 
-  // Inject keyframes ke DOM sekali saat komponen dimuat
+  // Inject keyframes (tetap sama)
   useEffect(() => {
     const styleSheet = document.createElement("style");
     styleSheet.type = "text/css";
     styleSheet.innerText = keyframes;
     document.head.appendChild(styleSheet);
-    return () => { document.head.removeChild(styleSheet); }; // Cleanup
+    setIsClient(true); // Komponen sudah di-mount di klien
+    return () => { document.head.removeChild(styleSheet); };
   }, []);
 
-  // --- EFFECT: Menginisialisasi Email Saat Komponen Dimuat ---
+  // --- EFFECT: Menginisialisasi Sesi Email (Hanya di Sisi Klien) ---
   useEffect(() => {
-    async function initTempMail() {
+    async function initTempMailSession() {
+      if (!isClient) return; // Pastikan hanya berjalan di sisi klien setelah mount
+
       setIsLoadingEmail(true);
-      setMessage('Memuat sesi email atau membuat yang baru...'); 
+      setMessage('Memuat sesi email atau membuat yang baru...');
+      
       try {
         const storedEmail = localStorage.getItem(LS_EMAIL_KEY);
         const storedToken = localStorage.getItem(LS_TOKEN_KEY);
@@ -61,60 +65,69 @@ export default function TempMailPage() {
         const storedPassword = localStorage.getItem(LS_PASSWORD_KEY);
 
         if (storedEmail && storedToken && storedAccountId && storedPassword) {
+          // Ada sesi tersimpan, coba lanjutkan
           setTempEmail(storedEmail);
           setAccountToken(storedToken);
           setAccountId(storedAccountId);
-          emailPasswordRef.current = storedPassword;
-
+          emailPasswordRef.current = storedPassword; // Set password dari LS
+          
           setMessage('Melanjutkan sesi email yang sudah ada...');
-          await refreshInbox(); 
+          // Coba refresh inbox untuk memvalidasi token
+          const refreshSuccess = await refreshInbox(storedToken); // Teruskan token
+          if (!refreshSuccess) { // Jika refresh gagal (token expired/invalid)
+            throw new Error("Sesi email tidak valid atau sudah kedaluwarsa.");
+          }
+          
         } else {
+          // Tidak ada sesi tersimpan, buat email baru
           setMessage('Tidak ada sesi tersimpan. Membuat email baru...');
-          await generateNewEmail(true); 
+          await generateNewEmail(); // Panggil generate tanpa isInitialLoad flag
         }
-        
       } catch (error) {
         console.error('Initial TempMail Setup Error (frontend):', error);
-        setMessage(`Error saat setup email: ${error.message}. Silakan refresh halaman atau coba 'Ganti Email'.`);
-        setTempEmail('error@domain.com'); 
+        setMessage(`Error saat setup email: ${error.message}. Silakan coba 'Ganti Email'.`);
+        setTempEmail('error@email.com'); // Tampilkan error di input email
+        // Bersihkan localStorage jika ada masalah saat melanjutkan sesi
         localStorage.removeItem(LS_EMAIL_KEY);
         localStorage.removeItem(LS_TOKEN_KEY);
         localStorage.removeItem(LS_ACCOUNT_ID_KEY);
         localStorage.removeItem(LS_PASSWORD_KEY);
+        setAccountToken(null);
       } finally {
         setIsLoadingEmail(false);
       }
     }
-    initTempMail();
-  }, []);
+
+    if (isClient) { // Jalankan inisialisasi hanya jika sudah di klien
+      initTempMailSession();
+    }
+  }, [isClient]); 
 
   // --- EFFECT: Auto-Refresh Inbox Setiap 10 Detik ---
   useEffect(() => {
     let intervalId;
-    if (accountToken && tempEmail && !isLoadingEmail && !isRefreshingInbox && !tempEmail.includes('error@')) {
-      intervalId = setInterval(refreshInbox, 10000); 
+    if (isClient && accountToken && tempEmail && !isLoadingEmail && !isRefreshingInbox && !tempEmail.includes('error@')) {
+      intervalId = setInterval(() => refreshInbox(accountToken), 10000); 
     }
     return () => clearInterval(intervalId);
-  }, [accountToken, tempEmail, isLoadingEmail, isRefreshingInbox]);
+  }, [isClient, accountToken, tempEmail, isLoadingEmail, isRefreshingInbox]);
 
 
   // --- FUNGSI: Menghasilkan Email Baru (dan Login) ---
-  const generateNewEmail = async (isInitialLoad = false) => {
-    if (!isInitialLoad && (isLoadingEmail || isRefreshingInbox)) return;
+  const generateNewEmail = async () => { 
+    if (!isClient) { console.warn("Attempted generateNewEmail on server side."); return; } 
 
     setIsLoadingEmail(true);
     setInbox([]); 
-    setMessage(isInitialLoad ? 'Memuat domain dan menyiapkan email...' : 'Membuat email baru...');
+    setMessage('Mencari domain dan membuat email baru...');
     setAccountToken(null);
     setAccountId(null);
-    setTempEmail('');
-    
-    if (!isInitialLoad) {
-      localStorage.removeItem(LS_EMAIL_KEY);
-      localStorage.removeItem(LS_TOKEN_KEY);
-      localStorage.removeItem(LS_ACCOUNT_ID_KEY);
-      localStorage.removeItem(LS_PASSWORD_KEY);
-    }
+    setTempEmail(null); 
+
+    localStorage.removeItem(LS_EMAIL_KEY);
+    localStorage.removeItem(LS_TOKEN_KEY);
+    localStorage.removeItem(LS_ACCOUNT_ID_KEY);
+    localStorage.removeItem(LS_PASSWORD_KEY);
 
     try {
       const domainRes = await fetch('/api/mailtm', {
@@ -147,7 +160,7 @@ export default function TempMailPage() {
         body: JSON.stringify({
           action: 'create_account',
           email: newEmailAddress,
-          password: password,
+          password: password, 
         }),
       });
       const createData = await createRes.json();
@@ -157,7 +170,7 @@ export default function TempMailPage() {
       }
       setAccountId(createData.id);
 
-      await delay(2000); // Tunggu 2 detik
+      await delay(2000); 
 
       setMessage('Mendapatkan token otentikasi...');
       const tokenRes = await fetch('/api/mailtm', {
@@ -166,7 +179,7 @@ export default function TempMailPage() {
         body: JSON.stringify({
           action: 'get_token',
           email: newEmailAddress,
-          password: password,
+          password: password, 
         }),
       });
       const tokenData = await tokenRes.json();
@@ -189,26 +202,27 @@ export default function TempMailPage() {
       let errorMessage = error.message;
       if (errorMessage.includes('429')) {
           errorMessage = "Terlalu banyak permintaan (rate limit). Coba lagi setelah beberapa saat.";
-      } else if (errorMessage.includes('domain mati') || errorMessage.includes('domain not found') || errorMessage.includes('500')) {
-          errorMessage = "Domain atau server Mail.tm bermasalah. Mencoba lagi mungkin berhasil.";
-      } else if (errorMessage.includes('address already exists')) {
-          errorMessage = "Alamat email sudah ada. Mencoba alamat lain.";
+      } else if (errorMessage.includes('timeout')) { // Tangani timeout
+          errorMessage = "Permintaan terlalu lama, coba lagi.";
+      } else if (errorMessage.includes('Failed to parse JSON') || errorMessage.includes('Respon dari Mail.tm bukan JSON')) {
+          errorMessage = "Kesalahan respons dari Mail.tm, mungkin diblokir.";
       }
       setMessage(`Gagal membuat email baru: ${errorMessage}.`);
-      setTempEmail('error@email.com');
+      setTempEmail('error@email.com'); 
       localStorage.removeItem(LS_EMAIL_KEY);
       localStorage.removeItem(LS_TOKEN_KEY);
       localStorage.removeItem(LS_ACCOUNT_ID_KEY);
       localStorage.removeItem(LS_PASSWORD_KEY);
+      setAccountToken(null);
     } finally {
       setIsLoadingEmail(false);
     }
   };
 
   // --- FUNGSI: Me-refresh Inbox ---
-  const refreshInbox = async () => {
-    if (!accountToken || isLoadingEmail || isRefreshingInbox || tempEmail.includes('error@')) {
-      return; 
+  const refreshInbox = async (tokenToUse) => { 
+    if (!isClient || !tokenToUse || isLoadingEmail || isRefreshingInbox || (tempEmail && tempEmail.includes('error@'))) { 
+      return false; 
     }
 
     setIsRefreshingInbox(true);
@@ -218,7 +232,7 @@ export default function TempMailPage() {
       const res = await fetch('/api/mailtm', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'get_messages', token: accountToken }),
+        body: JSON.stringify({ action: 'get_messages', token: tokenToUse }), 
       });
       const data = await res.json();
 
@@ -234,6 +248,7 @@ export default function TempMailPage() {
         } else if (originalMessage === '' || originalMessage.includes('Tidak ada email baru')) {
             setMessage('Tidak ada email baru.');
         }
+        return true; 
       } else if (res.status === 401) { 
           throw new Error("Sesi tidak valid. Akun mungkin kedaluwarsa. Silakan 'Ganti Email'.");
       } else {
@@ -244,12 +259,15 @@ export default function TempMailPage() {
       console.error('Error refreshing inbox (frontend):', error);
       setMessage(`Gagal me-refresh inbox: ${error.message}`); 
       if (error.message.includes('Sesi tidak valid')) {
-          localStorage.removeItem(LS_EMAIL_KEY);
-          localStorage.removeItem(LS_TOKEN_KEY);
-          localStorage.removeItem(LS_ACCOUNT_ID_KEY);
-          localStorage.removeItem(LS_PASSWORD_KEY);
+          if (isClient) { 
+            localStorage.removeItem(LS_EMAIL_KEY);
+            localStorage.removeItem(LS_TOKEN_KEY);
+            localStorage.removeItem(LS_ACCOUNT_ID_KEY);
+            localStorage.removeItem(LS_PASSWORD_KEY);
+          }
           setAccountToken(null); 
       }
+      return false; 
     } finally {
       setIsRefreshingInbox(false);
       if (!message.includes('berhasil disalin')) {
@@ -260,10 +278,8 @@ export default function TempMailPage() {
 
   // --- FUNGSI: Membaca Detail Pesan ---
   const readMessage = async (messageId) => {
-    if (!accountToken || isLoadingEmail || isRefreshingInbox) {
-        setMessage('Tidak ada akun aktif atau sedang sibuk untuk membaca pesan.');
-        return;
-    }
+    if (!isClient || !accountToken || isLoadingEmail || isRefreshingInbox) return; 
+
     setMessage('Memuat detail pesan...');
     try {
         const res = await fetch('/api/mailtm', {
@@ -292,6 +308,8 @@ export default function TempMailPage() {
 
   // --- FUNGSI: Menyalin Email ke Clipboard ---
   const copyEmailToClipboard = async () => {
+    if (!isClient) return; 
+
     setIsCopying(true);
     setMessage(''); 
     try {
@@ -308,8 +326,37 @@ export default function TempMailPage() {
     }
   };
 
-  const FOOTER_HEIGHT = '40px'; // Definisikan tinggi footer
+  const FOOTER_HEIGHT = '40px'; 
 
+  // --- Tampilan Render ---
+  // Tampilkan placeholder loading jika belum di klien atau masih memuat email (tempEmail === null)
+  if (!isClient || tempEmail === null) {
+    return (
+      <div style={{
+        display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: '100vh',
+        backgroundColor: theme.backgroundColor, fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica Neue, sans-serif',
+        paddingBottom: `calc(40px + ${FOOTER_HEIGHT})`, paddingTop: '65px', color: theme.textColor,
+      }}>
+        <nav style={{ /* ...navbar styles */ }}></nav>
+        <div style={{
+          marginTop: '50px', textAlign: 'center', fontSize: '1.2em',
+          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+          minHeight: '400px', 
+          backgroundColor: theme.cardBackground, borderRadius: '12px',
+          boxShadow: '0 6px 20px rgba(0,0,0,0.1)',
+          width: '500px', 
+          maxWidth: '90%',
+          padding: '30px'
+        }}>
+          <span style={{ fontSize: '3em', marginBottom: '15px', color: theme.buttonPrimaryBg, animation: 'spin 1s linear infinite' }}>&#x231B;</span>
+          <p style={{ fontSize: '1.1em' }}>Memuat sesi email...</p>
+        </div>
+        <div style={{ /* ...footer styles */ }}></div>
+      </div>
+    );
+  }
+
+  // Render konten utama setelah isClient true dan tempEmail tidak null (berhasil dimuat/dibuat)
   return (
     <div style={{
       display: 'flex',
@@ -347,7 +394,7 @@ export default function TempMailPage() {
             <a style={{
               color: 'white', textDecoration: 'none', fontSize: '17px', 
               fontWeight: '600', padding: '8px 12px', borderRadius: '5px',
-              backgroundColor: 'rgba(255,255,255,0.2)', transition: 'background-color 0.2s ease-in-out, opacity 0.2s ease-in-out, transform 0.1s ease-in-out',
+              opacity: 0.8, transition: 'background-color 0.2s ease-in-out, opacity 0.2s ease-in-out, transform 0.1s ease-in-out',
               '@media (max-width: 768px)': {
                   fontSize: '15px', padding: '8px 10px', flexGrow: 1, textAlign: 'center',
               }
@@ -489,7 +536,7 @@ export default function TempMailPage() {
               <input
                 type="text"
                 readOnly
-                value={isLoadingEmail ? 'Membuat email...' : tempEmail || 'Memuat domain...'}
+                value={tempEmail || ''} 
                 style={{
                   flexGrow: 1,
                   border: 'none',
@@ -507,7 +554,7 @@ export default function TempMailPage() {
               />
               <button
                 onClick={copyEmailToClipboard}
-                disabled={isLoadingEmail || isCopying || !tempEmail || tempEmail.includes('error@')}
+                disabled={!isClient || isLoadingEmail || isCopying || !tempEmail || tempEmail.includes('error@')} 
                 style={{
                   background: theme.buttonPrimaryBg, 
                   border: 'none',
@@ -516,8 +563,8 @@ export default function TempMailPage() {
                   fontSize: '1em',
                   fontWeight: '600',
                   color: 'white',
-                  cursor: (isLoadingEmail || isCopying || !tempEmail || tempEmail.includes('error@')) ? 'not-allowed' : 'pointer',
-                  opacity: (isLoadingEmail || isCopying || !tempEmail || tempEmail.includes('error@')) ? 0.6 : 1,
+                  cursor: (!isClient || isLoadingEmail || isCopying || !tempEmail || tempEmail.includes('error@')) ? 'not-allowed' : 'pointer',
+                  opacity: (!isClient || isLoadingEmail || isCopying || !tempEmail || tempEmail.includes('error@')) ? 0.6 : 1,
                   transition: 'opacity 0.2s ease-in-out, background-color 0.2s ease-in-out',
                   display: 'flex',
                   alignItems: 'center',
@@ -577,14 +624,14 @@ export default function TempMailPage() {
             }}>
               <button
                 onClick={refreshInbox}
-                disabled={isRefreshingInbox || isLoadingEmail || !accountToken || tempEmail.includes('error@')}
+                disabled={!isClient || isRefreshingInbox || isLoadingEmail || !accountToken || !tempEmail || tempEmail.includes('error@')} 
                 style={{
                   padding: '12px 25px',
-                  backgroundColor: (isRefreshingInbox || !accountToken || tempEmail.includes('error@')) ? theme.buttonPrimaryHoverBg : theme.buttonPrimaryBg, // Warna tombol dari tema
+                  backgroundColor: (!isClient || isRefreshingInbox || !accountToken || !tempEmail || tempEmail.includes('error@')) ? theme.buttonPrimaryHoverBg : theme.buttonPrimaryBg,
                   color: 'white',
                   border: 'none',
                   borderRadius: '8px',
-                  cursor: (isRefreshingInbox || !accountToken || tempEmail.includes('error@')) ? 'not-allowed' : 'pointer',
+                  cursor: (!isClient || isRefreshingInbox || !accountToken || !tempEmail || tempEmail.includes('error@')) ? 'not-allowed' : 'pointer',
                   fontSize: '1em',
                   fontWeight: '600',
                   transition: 'background-color 0.2s ease-in-out',
@@ -598,15 +645,15 @@ export default function TempMailPage() {
                 <span style={{ marginRight: '8px' }}>&#x21BB;</span> {isRefreshingInbox ? 'Memuat...' : 'Refresh Inbox'}
               </button>
               <button
-                onClick={() => generateNewEmail(false)}
-                disabled={isLoadingEmail || isRefreshingInbox}
+                onClick={generateNewEmail} 
+                disabled={!isClient || isLoadingEmail || isRefreshingInbox} 
                 style={{
                   padding: '12px 25px',
-                  backgroundColor: isLoadingEmail ? theme.buttonWarningHoverBg : theme.buttonWarningBg, // Warna tombol dari tema
-                  color: theme.textColor, // Teks tombol dari tema
+                  backgroundColor: (!isClient || isLoadingEmail) ? theme.buttonWarningHoverBg : theme.buttonWarningBg,
+                  color: theme.textColor, 
                   border: 'none',
                   borderRadius: '8px',
-                  cursor: isLoadingEmail ? 'not-allowed' : 'pointer',
+                  cursor: (!isClient || isLoadingEmail) ? 'not-allowed' : 'pointer',
                   fontSize: '1em',
                   fontWeight: '600',
                   transition: 'background-color 0.2s ease-in-out',
