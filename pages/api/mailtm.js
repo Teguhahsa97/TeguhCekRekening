@@ -1,87 +1,62 @@
 // pages/api/mailtm.js
 
-const MAILTM_API_BASE_URL = 'https://api.mail.tm';
-
 export default async function handler(req, res) {
   if (req.method === 'POST') {
-    const { action, email, password, token, messageId } = req.body;
+    const { action, email, password, token } = req.body;
+
+    // Simulasikan delay API agar terlihat seperti ada proses jaringan
+    await new Promise(resolve => setTimeout(resolve, 1000)); // Delay 1 detik
 
     try {
-      let apiResponse;
-      let data;
-      let url;
-      let options;
-
       switch (action) {
         case 'get_domains':
-          url = `${MAILTM_API_BASE_URL}/domains`;
-          options = { timeout: 15000 }; // Tambah timeout 15 detik
-          break;
+          // Simulasikan domain yang tersedia
+          const simulatedDomains = [
+            { id: 'dom1', domain: 'example.com', isActive: true },
+            { id: 'dom2', domain: 'tempmail.net', isActive: true },
+            { id: 'dom3', domain: 'mail.org', isActive: true },
+          ];
+          return res.status(200).json({ 'hydra:member': simulatedDomains });
 
         case 'create_account':
-          url = `${MAILTM_API_BASE_URL}/accounts`;
-          options = {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ address: email, password: password }),
-            timeout: 15000 // Tambah timeout
-          };
-          break;
+          // Simulasikan pembuatan akun
+          const simulatedId = `acc_${Math.random().toString(36).substring(2, 10)}`;
+          return res.status(200).json({ id: simulatedId, address: email, password: password });
 
         case 'get_token':
-          url = `${MAILTM_API_BASE_URL}/token`;
-          options = {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ address: email, password: password }),
-            timeout: 15000 // Tambah timeout
-          };
-          break;
+          // Simulasikan pemberian token
+          const simulatedToken = `sim_jwt_${Math.random().toString(36).substring(2, 20)}`;
+          return res.status(200).json({ token: simulatedToken });
 
         case 'get_messages':
-          if (!token) {
-            return res.status(401).json({ error: 'Authorization token is missing.' });
-          }
-          url = `${MAILTM_API_BASE_URL}/messages`;
-          options = {
-            headers: { 'Authorization': `Bearer ${token}` },
-            timeout: 15000 // Tambah timeout
-          };
-          break;
-        
+          // Simulasikan email di inbox
+          // Anda bisa membuat logika yang lebih kompleks di sini
+          const simulatedMessages = [
+            { id: 'msg1', subject: 'Welcome! Your Simulated Email', from: { address: 'support@simulated.com' }, intro: 'Thank you for using our service!', createdAt: new Date().toISOString(), text: 'This is a simulated welcome message.', html: ['<p>This is a <b>simulated</b> welcome message.</p>'] },
+            { id: 'msg2', subject: 'Your Order #12345 (Simulated)', from: { address: 'shop@simulated.com' }, intro: 'Your order has been placed!', createdAt: new Date(Date.now() - 60000).toISOString(), text: 'Order details: Item A, Item B.', html: ['<p>Order details: <b>Item A</b>, <i>Item B</i>.</p>'] },
+          ];
+          return res.status(200).json({ 'hydra:member': simulatedMessages });
+
         case 'read_message':
-          if (!token || !messageId) {
-            return res.status(400).json({ error: 'Authorization token and message ID are required.' });
-          }
-          url = `${MAILTM_API_BASE_URL}/messages/${messageId}`;
-          options = {
-            headers: { 'Authorization': `Bearer ${token}` },
-            timeout: 15000 // Tambah timeout
+          // Simulasikan membaca detail pesan
+          // Untuk demo, kembalikan salah satu pesan simulasi
+          const msgToRead = simulatedMessages.find(msg => msg.id === req.body.messageId) || {
+            id: req.body.messageId,
+            subject: 'Simulated Message Detail',
+            from: { address: 'system@simulated.com' },
+            intro: 'This is a detailed view of a simulated message.',
+            text: 'This is the full text body of the simulated message.',
+            html: ['<p>This is the <b>full HTML body</b> of the simulated message.</p>'],
+            createdAt: new Date().toISOString(),
           };
-          break;
+          return res.status(200).json(msgToRead);
 
         default:
-          return res.status(400).json({ error: 'Invalid API action.' });
+          return res.status(400).json({ error: 'Invalid API action for TempMail simulation.' });
       }
-
-      apiResponse = await fetch(url, options); // fetch() di Node.js tidak punya parameter timeout langsung
-                                                // Jika ingin timeout, perlu implementasi AbortController.
-                                                // Tapi untuk case ini, timeout default fetch biasanya cukup.
-                                                // Atau gunakan library seperti axios yang punya timeout.
-
-      data = await apiResponse.json();
-      
-      // Log respons penuh dari Mail.tm jika bukan 2xx atau ada kode error dari Mail.tm
-      if (!apiResponse.ok || (data && data.code)) { 
-        console.error(`[Mail.tm API Proxy Error] Action: ${action}, Status: ${apiResponse.status}, Mail.tm Code: ${data?.code}, Detail: ${data?.detail}, Response:`, data);
-      }
-
-      res.status(apiResponse.status).json(data);
-
     } catch (error) {
-      // Tangani error jaringan atau parsing JSON
-      console.error(`[Mail.tm API Proxy Fatal Error] Action: ${action}, Error:`, error);
-      res.status(500).json({ error: 'Internal server error processing Mail.tm request, or network issue.' });
+      console.error('[API Proxy Fatal Error] Error in TempMail simulation API Route:', error);
+      res.status(500).json({ status: 'error', message: 'Internal server error in TempMail simulation.', detail: error.message });
     }
   } else {
     res.setHeader('Allow', ['POST']);
