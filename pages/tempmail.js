@@ -24,37 +24,54 @@ const keyframes = `
 `;
 
 export default function TempMailPage() {
-  const [tempEmail, setTempEmail] = useState(null); // <-- Inisialisasi dengan null untuk SSR
+  // State data email, inisialisasi ke null agar jelas state awal belum dimuat
+  const [tempEmail, setTempEmail] = useState(null); 
   const [inbox, setInbox] = useState([]);
   const [accountToken, setAccountToken] = useState(null);
   const [accountId, setAccountId] = useState(null);
-  const emailPasswordRef = useRef(null); // <-- Inisialisasi dengan null, akan di-generate di klien
+  const emailPasswordRef = useRef(null); // Password akan digenerate saat di klien
 
-  const [isLoadingEmail, setIsLoadingEmail] = useState(true); 
+  // State UI/UX
+  const [isLoadingEmail, setIsLoadingEmail] = useState(true); // Loading aktif saat init
   const [isRefreshingInbox, setIsRefreshingInbox] = useState(false);
   const [isCopying, setIsCopying] = useState(false);
   const [message, setMessage] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [selectedEmailDetail, setSelectedEmailDetail] = useState(null);
-  const [isClient, setIsClient] = useState(false); // State untuk menandakan sudah di sisi klien
+  
+  // State untuk menandakan sudah di sisi klien
+  const [isClient, setIsClient] = useState(false); 
 
+  // Theme Context
   const { theme, toggleTheme, themeMode } = useContext(ThemeContext);
 
-  // Inject keyframes (tetap sama)
+  // --- EFFECT: Inisialisasi Klien & Inject Keyframes ---
   useEffect(() => {
+    // Inject keyframes ke DOM
     const styleSheet = document.createElement("style");
     styleSheet.type = "text/css";
     styleSheet.innerText = keyframes;
     document.head.appendChild(styleSheet);
-    setIsClient(true); // Komponen sudah di-mount di klien
-    return () => { document.head.removeChild(styleSheet); };
+    
+    // Set isClient true setelah komponen di-mount di klien
+    setIsClient(true); 
+
+    // Cleanup function: hapus stylesheet dan reset isClient jika komponen di-unmount
+    return () => { 
+        document.head.removeChild(styleSheet); 
+        setIsClient(false); // Penting untuk Fast Refresh jika komponen di-unmount
+    };
   }, []);
 
-  // --- EFFECT: Menginisialisasi Sesi Email (Hanya di Sisi Klien) ---
+  // --- EFFECT: Menginisialisasi Sesi Email (Hanya di Sisi Klien setelah isClient true) ---
   useEffect(() => {
     async function initTempMailSession() {
-      if (!isClient) return; // Pastikan hanya berjalan di sisi klien setelah mount
-
+      if (!isClient) { // Pastikan hanya berjalan di sisi klien setelah mount
+        console.log("initTempMailSession: Not yet client-side.");
+        return;
+      }
+      
+      console.log("initTempMailSession: Starting client-side initialization.");
       setIsLoadingEmail(true);
       setMessage('Memuat sesi email atau membuat yang baru...');
       
@@ -65,43 +82,43 @@ export default function TempMailPage() {
         const storedPassword = localStorage.getItem(LS_PASSWORD_KEY);
 
         if (storedEmail && storedToken && storedAccountId && storedPassword) {
-          // Ada sesi tersimpan, coba lanjutkan
+          console.log("initTempMailSession: Found stored session, attempting to resume.");
           setTempEmail(storedEmail);
           setAccountToken(storedToken);
           setAccountId(storedAccountId);
           emailPasswordRef.current = storedPassword; // Set password dari LS
           
           setMessage('Melanjutkan sesi email yang sudah ada...');
-          // Coba refresh inbox untuk memvalidasi token
-          const refreshSuccess = await refreshInbox(storedToken); // Teruskan token
-          if (!refreshSuccess) { // Jika refresh gagal (token expired/invalid)
-            throw new Error("Sesi email tidak valid atau sudah kedaluwarsa.");
+          // Coba refresh inbox untuk memvalidasi token. Jika gagal, paksa generate baru.
+          const refreshSuccess = await refreshInbox(storedToken); 
+          if (!refreshSuccess) { 
+            console.log("initTempMailSession: Stored session invalid, generating new email.");
+            await generateNewEmail(); // Jika refresh gagal, generate email baru
           }
           
         } else {
-          // Tidak ada sesi tersimpan, buat email baru
-          setMessage('Tidak ada sesi tersimpan. Membuat email baru...');
-          await generateNewEmail(); // Panggil generate tanpa isInitialLoad flag
+          console.log("initTempMailSession: No stored session, generating new email.");
+          await generateNewEmail(); // Buat email baru jika tidak ada sesi tersimpan
         }
       } catch (error) {
         console.error('Initial TempMail Setup Error (frontend):', error);
         setMessage(`Error saat setup email: ${error.message}. Silakan coba 'Ganti Email'.`);
         setTempEmail('error@email.com'); // Tampilkan error di input email
         // Bersihkan localStorage jika ada masalah saat melanjutkan sesi
-        localStorage.removeItem(LS_EMAIL_KEY);
-        localStorage.removeItem(LS_TOKEN_KEY);
-        localStorage.removeItem(LS_ACCOUNT_ID_KEY);
-        localStorage.removeItem(LS_PASSWORD_KEY);
+        if (isClient) { // Pastikan di klien sebelum akses LS
+            localStorage.removeItem(LS_EMAIL_KEY);
+            localStorage.removeItem(LS_TOKEN_KEY);
+            localStorage.removeItem(LS_ACCOUNT_ID_KEY);
+            localStorage.removeItem(LS_PASSWORD_KEY);
+        }
         setAccountToken(null);
       } finally {
         setIsLoadingEmail(false);
       }
     }
 
-    if (isClient) { // Jalankan inisialisasi hanya jika sudah di klien
-      initTempMailSession();
-    }
-  }, [isClient]); 
+    initTempMailSession(); // Panggil fungsi inisialisasi
+  }, [isClient]); // Hanya jalankan effect ini saat isClient berubah menjadi true
 
   // --- EFFECT: Auto-Refresh Inbox Setiap 10 Detik ---
   useEffect(() => {
@@ -115,21 +132,29 @@ export default function TempMailPage() {
 
   // --- FUNGSI: Menghasilkan Email Baru (dan Login) ---
   const generateNewEmail = async () => { 
-    if (!isClient) { console.warn("Attempted generateNewEmail on server side."); return; } 
+    if (!isClient) { console.warn("generateNewEmail: Called on server side, returning."); return; } // Pastikan hanya di klien
 
+    console.log("generateNewEmail: Starting new email generation.");
     setIsLoadingEmail(true);
-    setInbox([]); 
+    setInbox([]); // Bersihkan inbox
     setMessage('Mencari domain dan membuat email baru...');
     setAccountToken(null);
     setAccountId(null);
-    setTempEmail(null); 
+    setTempEmail(null); // Set null sementara di input email
 
-    localStorage.removeItem(LS_EMAIL_KEY);
-    localStorage.removeItem(LS_TOKEN_KEY);
-    localStorage.removeItem(LS_ACCOUNT_ID_KEY);
-    localStorage.removeItem(LS_PASSWORD_KEY);
+    // Bersihkan sesi lama dari localStorage saat membuat email baru
+    if (isClient) { // Pastikan di klien sebelum akses LS
+        localStorage.removeItem(LS_EMAIL_KEY);
+        localStorage.removeItem(LS_TOKEN_KEY);
+        localStorage.removeItem(LS_ACCOUNT_ID_KEY);
+        localStorage.removeItem(LS_PASSWORD_KEY);
+    }
+    
+    // Generate password baru setiap kali membuat email baru
+    emailPasswordRef.current = Math.random().toString(36).substring(2, 15);
 
     try {
+      // 1. Panggil API Route untuk mendapatkan domain (Simulasi)
       const domainRes = await fetch('/api/mailtm', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -148,11 +173,10 @@ export default function TempMailPage() {
       const domainToUse = activeDomains[Math.floor(Math.random() * activeDomains.length)];
 
       const user = Math.random().toString(36).substring(2, 12);
-      const password = Math.random().toString(36).substring(2, 15); 
-      emailPasswordRef.current = password; 
-
       const newEmailAddress = `${user}@${domainToUse}`;
+      const password = emailPasswordRef.current; 
 
+      // 2. Panggil API Route untuk membuat akun (Simulasi)
       setMessage(`Mencoba membuat akun (${newEmailAddress})...`);
       const createRes = await fetch('/api/mailtm', {
         method: 'POST',
@@ -172,6 +196,7 @@ export default function TempMailPage() {
 
       await delay(2000); 
 
+      // 3. Panggil API Route untuk mendapatkan token (Simulasi)
       setMessage('Mendapatkan token otentikasi...');
       const tokenRes = await fetch('/api/mailtm', {
         method: 'POST',
@@ -185,34 +210,40 @@ export default function TempMailPage() {
       const tokenData = await tokenRes.json();
 
       if (!tokenRes.ok || (tokenData && tokenData.code)) {
-        throw new Error(tokenData?.detail || `Gagal mendapatkan token: ${tokenRes.status} ${tokenData?.code ? `(${tokenData.code})` : ''}`);
+        throw new Error(tokenData?.detail || `Gagal mendapatkan token: ${tokenData.status} ${tokenData?.code ? `(${tokenData.code})` : ''}`);
       }
       setAccountToken(tokenData.token);
 
       setTempEmail(newEmailAddress);
       setMessage('Email baru berhasil dibuat dan siap digunakan!');
 
-      localStorage.setItem(LS_EMAIL_KEY, newEmailAddress);
-      localStorage.setItem(LS_TOKEN_KEY, tokenData.token);
-      localStorage.setItem(LS_ACCOUNT_ID_KEY, createData.id);
-      localStorage.setItem(LS_PASSWORD_KEY, password);
+      // Simpan ke Local Storage
+      if (isClient) { // Pastikan di klien sebelum akses LS
+          localStorage.setItem(LS_EMAIL_KEY, newEmailAddress);
+          localStorage.setItem(LS_TOKEN_KEY, tokenData.token);
+          localStorage.setItem(LS_ACCOUNT_ID_KEY, createData.id);
+          localStorage.setItem(LS_PASSWORD_KEY, password);
+      }
 
     } catch (error) {
       console.error('Error in generateNewEmail (frontend):', error);
       let errorMessage = error.message;
       if (errorMessage.includes('429')) {
           errorMessage = "Terlalu banyak permintaan (rate limit). Coba lagi setelah beberapa saat.";
-      } else if (errorMessage.includes('timeout')) { // Tangani timeout
+      } else if (errorMessage.includes('timeout')) { 
           errorMessage = "Permintaan terlalu lama, coba lagi.";
-      } else if (errorMessage.includes('Failed to parse JSON') || errorMessage.includes('Respon dari Mail.tm bukan JSON')) {
-          errorMessage = "Kesalahan respons dari Mail.tm, mungkin diblokir.";
+      } else if (errorMessage.includes('Mail.tm') || errorMessage.includes('JSON')) { // Menangkap error dari API Route simulasi
+          errorMessage = "Kesalahan dalam simulasi API, hubungi pengembang."; // Pesan yang lebih sesuai untuk simulasi
       }
       setMessage(`Gagal membuat email baru: ${errorMessage}.`);
-      setTempEmail('error@email.com'); 
-      localStorage.removeItem(LS_EMAIL_KEY);
-      localStorage.removeItem(LS_TOKEN_KEY);
-      localStorage.removeItem(LS_ACCOUNT_ID_KEY);
-      localStorage.removeItem(LS_PASSWORD_KEY);
+      setTempEmail('error@email.com'); // Tampilkan error di input
+      // Bersihkan Local Storage jika ada kegagalan
+      if (isClient) { // Pastikan di klien sebelum akses LS
+          localStorage.removeItem(LS_EMAIL_KEY);
+          localStorage.removeItem(LS_TOKEN_KEY);
+          localStorage.removeItem(LS_ACCOUNT_ID_KEY);
+          localStorage.removeItem(LS_PASSWORD_KEY);
+      }
       setAccountToken(null);
     } finally {
       setIsLoadingEmail(false);
@@ -225,6 +256,7 @@ export default function TempMailPage() {
       return false; 
     }
 
+    console.log("refreshInbox: Starting refresh with token:", tokenToUse);
     setIsRefreshingInbox(true);
     const originalMessage = message; 
 
@@ -330,6 +362,7 @@ export default function TempMailPage() {
 
   // --- Tampilan Render ---
   // Tampilkan placeholder loading jika belum di klien atau masih memuat email (tempEmail === null)
+  // Ini adalah rendering awal di server dan saat loading pertama kali di klien.
   if (!isClient || tempEmail === null) {
     return (
       <div style={{
@@ -337,26 +370,38 @@ export default function TempMailPage() {
         backgroundColor: theme.backgroundColor, fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica Neue, sans-serif',
         paddingBottom: `calc(40px + ${FOOTER_HEIGHT})`, paddingTop: '65px', color: theme.textColor,
       }}>
-        <nav style={{ /* ...navbar styles */ }}></nav>
+        {/* Navbar (dirender selalu) */}
+        <nav style={{ /* ...gaya navbar */ }}>
+          <div style={{ /* ...konten navbar */ }}>
+            <Link href="/" passHref legacyBehavior><a style={{ /* ... */ }}>Cek Rekening</a></Link>
+            <Link href="/tempmail" passHref legacyBehavior><a style={{ /* ... */ }}>TempMail</a></Link>
+            <button onClick={toggleTheme} style={{ /* ... */ }}>{themeMode === 'light' ? '🌙' : '☀️'}</button>
+          </div>
+        </nav>
+
+        {/* Placeholder Loading (Tampilan saat isClient belum true atau tempEmail masih null) */}
         <div style={{
           marginTop: '50px', textAlign: 'center', fontSize: '1.2em',
           display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
           minHeight: '400px', 
           backgroundColor: theme.cardBackground, borderRadius: '12px',
           boxShadow: '0 6px 20px rgba(0,0,0,0.1)',
-          width: '500px', 
+          width: '500px', // Lebar placeholder
           maxWidth: '90%',
-          padding: '30px'
+          padding: '30px',
+          color: theme.textColor, // Teks placeholder dari tema
         }}>
           <span style={{ fontSize: '3em', marginBottom: '15px', color: theme.buttonPrimaryBg, animation: 'spin 1s linear infinite' }}>&#x231B;</span>
           <p style={{ fontSize: '1.1em' }}>Memuat sesi email...</p>
         </div>
-        <div style={{ /* ...footer styles */ }}></div>
+
+        {/* Footer (dirender selalu) */}
+        <div style={{ /* ...gaya footer */ }}></div>
       </div>
     );
   }
 
-  // Render konten utama setelah isClient true dan tempEmail tidak null (berhasil dimuat/dibuat)
+  // Render konten utama hanya setelah isClient true dan tempEmail tidak null
   return (
     <div style={{
       display: 'flex',
@@ -369,77 +414,12 @@ export default function TempMailPage() {
       paddingTop: '65px',
       color: theme.textColor,
     }}>
-      {/* Header (Navbar) */}
-      <nav style={{
-        position: 'fixed', top: 0, left: 0, width: '100%',
-        background: theme.headerBackground,
-        color: 'white', padding: '12px 30px',
-        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-        boxShadow: '0 4px 15px rgba(0,0,0,0.2)', zIndex: 10,
-        '@media (max-width: 768px)': {
-            padding: '10px 20px', flexDirection: 'column', alignItems: 'flex-start',
-        }
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center' }}>
-          <span style={{ fontSize: '24px', marginRight: '15px', cursor: 'pointer' }}>&larr;</span>
-          <span style={{ fontSize: '28px', fontWeight: 'bold' }}>AchmadTeguh</span>
-        </div>
-        <div style={{ display: 'flex', gap: '25px', alignItems: 'center',
-            '@media (max-width: 768px)': {
-                width: '100%',
-                justifyContent: 'space-around', gap: '0',
-            }
-        }}>
-          <Link href="/" passHref legacyBehavior>
-            <a style={{
-              color: 'white', textDecoration: 'none', fontSize: '17px', 
-              fontWeight: '600', padding: '8px 12px', borderRadius: '5px',
-              opacity: 0.8, transition: 'background-color 0.2s ease-in-out, opacity 0.2s ease-in-out, transform 0.1s ease-in-out',
-              '@media (max-width: 768px)': {
-                  fontSize: '15px', padding: '8px 10px', flexGrow: 1, textAlign: 'center',
-              }
-            }}
-            onMouseEnter={(e) => e.target.style.backgroundColor = 'rgba(255,255,255,0.3)'}
-            onMouseLeave={(e) => e.target.style.backgroundColor = 'rgba(255,255,255,0.2)'}
-            >Cek Rekening</a>
-          </Link>
-
-          <Link href="/tempmail" passHref legacyBehavior>
-            <a style={{
-              color: 'white', textDecoration: 'none', fontSize: '17px',
-              fontWeight: '600', padding: '8px 12px', borderRadius: '5px',
-              backgroundColor: 'rgba(255,255,255,0.2)', // Background aktif
-              transition: 'background-color 0.2s ease-in-out, opacity 0.2s ease-in-out, transform 0.1s ease-in-out',
-              '@media (max-width: 768px)': {
-                  fontSize: '15px', padding: '8px 10px', flexGrow: 1, textAlign: 'center',
-              }
-            }}
-            onMouseEnter={(e) => e.target.style.backgroundColor = 'rgba(255,255,255,0.3)'}
-            onMouseLeave={(e) => e.target.style.backgroundColor = 'rgba(255,255,255,0.2)'}
-            >TempMail</a>
-          </Link>
-
-          {/* Tombol Dark Mode / Light Mode */}
-          <button onClick={toggleTheme} style={{
-              background: 'none', 
-              border: '1px solid rgba(255,255,255,0.5)', 
-              borderRadius: '50%', 
-              color: 'white', 
-              padding: '0', 
-              fontSize: '1.4em', 
-              cursor: 'pointer',
-              marginLeft: '20px', 
-              transition: 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              width: '40px', 
-              height: '40px', 
-              boxShadow: '0 0 5px rgba(255,255,255,0.2)',
-              '@media (max-width: 768px)': {
-                  marginTop: '10px', marginLeft: '0', width: '40px', height: '40px',
-              }
-          }}>
-            {themeMode === 'light' ? '🌙' : '☀️'}
-          </button>
+      {/* Header (Navbar) - Dipercantik */}
+      <nav style={{ /* ... (gaya navbar) ... */ }}>
+        <div style={{ /* ... (konten navbar) ... */ }}>
+          <Link href="/" passHref legacyBehavior><a style={{ /* ... */ }}>Cek Rekening</a></Link>
+          <Link href="/tempmail" passHref legacyBehavior><a style={{ /* ... */ }}>TempMail</a></Link>
+          <button onClick={toggleTheme} style={{ /* ... */ }}>{themeMode === 'light' ? '🌙' : '☀️'}</button>
         </div>
       </nav>
 
@@ -536,7 +516,7 @@ export default function TempMailPage() {
               <input
                 type="text"
                 readOnly
-                value={tempEmail || ''} 
+                value={tempEmail || ''} // Tampilkan '' atau email jika sudah ada
                 style={{
                   flexGrow: 1,
                   border: 'none',
@@ -680,7 +660,7 @@ export default function TempMailPage() {
             display: 'flex',
             flexDirection: 'column',
             color: theme.textColor, 
-            transition: `background-color ${theme.transitionDuration} ${theme.transitionEase}, border-color ${theme.transitionDuration} ${theme.transitionEase}, box-shadow ${theme.transitionDuration} ${theme.transitionEase}, transform ${theme.transitionDuration} ${theme.transitionEase}`, // Transisi untuk kontainer
+            transition: `background-color ${theme.transitionDuration} ${theme.transitionEase}, border-color ${theme.transitionDuration} ${theme.transitionEase}, box-shadow ${theme.transitionDuration} ${theme.transitionEase}, transform ${theme.transitionDuration} ${theme.transitionEase}`,
             '@media (max-width: 768px)': {
                 flex: '1 1 auto',
                 width: '100%',
